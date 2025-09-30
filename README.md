@@ -125,7 +125,7 @@ How It Works
 * Archive tables; copies existing SQL tables to safeguard against errors.
 * Download files; retrieves voter registration \& history zips from NCSBE.
 * Archive \& unzip; copies downloads into archive and extracts text files.
-* Process files; Normalizes whitespace, adds data\_date, deduplicates records.
+* Process files; normalizes whitespace, adds data\_date, deduplicates records.
 * Append to DB; inserts only new/changed records into the history tables.
 
 
