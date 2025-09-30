@@ -149,8 +149,11 @@ License
 -------
 
 
+This project is offered under a **dual license**:
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+- **MIT License** – You are free to use, modify, and distribute this software, provided that attribution is given.  
+- **Commons Clause** – Commercial use of the software requires prior permission.  
 
+See the [LICENSE](LICENSE) file for full details.
 
 
