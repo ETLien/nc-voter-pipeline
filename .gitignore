@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Runtime state
+*.log
+last_modified.json
+
+# OS cruft
+.DS_Store
+Thumbs.db
