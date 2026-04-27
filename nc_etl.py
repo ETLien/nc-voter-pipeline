@@ -42,7 +42,7 @@ DB_PORT = "5432"
 DB_NAME = "your_database_name"
 DB_SCHEMA = "public"
 
-DB_PATH = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_PATH = f"postgresql+postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 VREG_TABLE = "nc_vreg_history"
 VHIS_TABLE = "nc_vhis_history"
 VREG_STAGING = "vreg_staging"
@@ -84,7 +84,7 @@ def run_pipeline():
         for url, (raw, date_str) in updates.items():
             log.info(f"Update detected: {os.path.basename(url)} — {raw}")
 
-        copy_sql_tables_to_archive(DB_PATH, [VREG_TABLE, VHIS_TABLE], ARCHIVE_PATH)
+        copy_sql_tables_to_archive([VREG_TABLE, VHIS_TABLE], ARCHIVE_PATH)
 
         for url, (raw, date_str) in updates.items():
             filename = os.path.basename(url)
@@ -171,11 +171,11 @@ def save_file_status(cache_file, filename, raw_timestamp, processed):
     with open(cache_file, "w") as f:
         json.dump(existing, f, indent=2)
 
-def copy_sql_tables_to_archive(db_path, table_names, destination):
+def copy_sql_tables_to_archive(table_names, destination):
     for table in table_names:
         out_path = os.path.join(destination, f"{table}.tsv")
-        log.info(f"Archiving {table} → {out_path}")
-        with psycopg.connect(db_path) as conn:
+        log.info(f"Archiving {table} -> {out_path}")
+        with psycopg.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD) as conn:
             with conn.cursor() as cur, open(out_path, "wb") as outfile:
                 cur.execute("START TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;")
                 copy_sql = (
@@ -295,7 +295,7 @@ def process_registration_file(file_path, date_str):
         conn.exec_driver_sql(f'DROP TABLE {DB_SCHEMA}."{VREG_STAGING}";')
 
     os.remove(file_path)
-    log.info(f"Registration complete. {rows_inserted:,} new/changed records → {VREG_TABLE}")
+    log.info(f"Registration complete. {rows_inserted:,} new/changed records -> {VREG_TABLE}")
 
 def process_history_file(file_path, date_str):
     log.info(f"Processing history file: {file_path}")
@@ -345,7 +345,7 @@ def process_history_file(file_path, date_str):
             log.info(f"  ... processed {chunk_num * CHUNK_SIZE:,} rows so far")
 
     os.remove(file_path)
-    log.info(f"History complete. {total_new:,} new records → {VHIS_TABLE}")
+    log.info(f"History complete. {total_new:,} new records -> {VHIS_TABLE}")
 
 
 if __name__ == "__main__":

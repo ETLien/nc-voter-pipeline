@@ -12,6 +12,10 @@ __pycache__/
 *.log
 last_modified.json
 
+# Local copies
+nc_etl_localWin.py
+nc_etl_localMac.py
+
 # OS cruft
 .DS_Store
 Thumbs.db
