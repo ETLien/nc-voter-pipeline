@@ -14,7 +14,9 @@ last_modified.json
 
 # Local copies
 nc_etl_localWin.py
+recreate_masters_localWin.py
 nc_etl_localMac.py
+recreate_masters_localMac.py
 
 # OS cruft
 .DS_Store
