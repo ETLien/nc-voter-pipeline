@@ -42,7 +42,7 @@ DB_PORT = "5432"
 DB_NAME = "your_database_name"
 DB_SCHEMA = "public"
 
-DB_PATH = f"postgresql+postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_PATH = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 VREG_TABLE = "nc_vreg_history"
 VHIS_TABLE = "nc_vhis_history"
 VREG_STAGING = "vreg_staging"
@@ -81,16 +81,24 @@ def run_pipeline():
             log.info("No updates detected. Skipping.")
             return
 
+        cached = load_cached_timestamps(CACHE_FILE)
         for url, (raw, date_str) in updates.items():
             log.info(f"Update detected: {os.path.basename(url)} — {raw}")
 
-        copy_sql_tables_to_archive([VREG_TABLE, VHIS_TABLE], ARCHIVE_PATH)
+        # Archive only when at least one file has new data from S3 (not just a retry)
+        need_archive = any(
+            cached.get(os.path.basename(url), {}).get("timestamp") != raw
+            or not cached.get(os.path.basename(url), {}).get("archived", False)
+            for url, (raw, _) in updates.items()
+        )
+        if need_archive:
+            copy_sql_tables_to_archive([VREG_TABLE, VHIS_TABLE], ARCHIVE_PATH)
+            for url, (raw, _) in updates.items():
+                save_file_status(CACHE_FILE, os.path.basename(url), raw, processed=False, archived=True)
 
         for url, (raw, date_str) in updates.items():
             filename = os.path.basename(url)
             stem = filename.split(".")[0]
-
-            save_file_status(CACHE_FILE, filename, raw, processed=False)
 
             download_file(url, DOWNLOAD_PATH, ARCHIVE_PATH, date_str)
             if stem == VREG_STEM:
@@ -102,7 +110,7 @@ def run_pipeline():
                     os.path.join(DOWNLOAD_PATH, f"{stem}.txt"), date_str
                 )
 
-            save_file_status(CACHE_FILE, filename, raw, processed=True)
+            save_file_status(CACHE_FILE, filename, raw, processed=True, archived=True)
 
         log.info("--- Pipeline complete ---")
 
@@ -165,11 +173,15 @@ def load_cached_timestamps(cache_file):
         return {}
 
 
-def save_file_status(cache_file, filename, raw_timestamp, processed):
+def save_file_status(cache_file, filename, raw_timestamp, processed, archived=None):
     existing = load_cached_timestamps(cache_file)
-    existing[filename] = {"timestamp": raw_timestamp, "processed": processed}
+    entry = {"timestamp": raw_timestamp, "processed": processed}
+    if archived is not None:
+        entry["archived"] = archived
+    elif "archived" in existing.get(filename, {}):
+        entry["archived"] = existing[filename]["archived"]
     with open(cache_file, "w") as f:
-        json.dump(existing, f, indent=2)
+        json.dump(existing | {filename: entry}, f, indent=2)
 
 def copy_sql_tables_to_archive(table_names, destination):
     for table in table_names:
@@ -226,6 +238,28 @@ def get_table_columns(engine, schema, table):
     with engine.connect() as conn:
         result = conn.exec_driver_sql(f'SELECT * FROM {schema}."{table}" LIMIT 0;')
         return [m[0] for m in result.cursor.description]
+
+
+def get_date_columns(engine, schema, table):
+    with engine.connect() as conn:
+        result = conn.exec_driver_sql(f"""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = '{schema}' AND table_name = '{table}'
+            AND data_type = 'date';
+        """)
+        return {row[0] for row in result}
+
+
+def build_hash_expr(cols, date_cols, prefix=""):
+    parts = []
+    for c in cols:
+        ref = f'{prefix}"{c}"' if prefix else f'"{c}"'
+        if c in date_cols:
+            # date - date → integer is IMMUTABLE; ::text on date is only STABLE
+            parts.append(f"COALESCE(({ref} - DATE '0001-01-01')::text, '')")
+        else:
+            parts.append(f"COALESCE({ref}::text, '')")
+    return " || '||' || ".join(parts)
 
 
 def ensure_indexes(engine):
@@ -300,12 +334,21 @@ def process_registration_file(file_path, date_str):
 def process_history_file(file_path, date_str):
     log.info(f"Processing history file: {file_path}")
     engine = create_engine(DB_PATH, pool_pre_ping=True)
+    ensure_indexes(engine)
     master_cols = get_table_columns(engine, DB_SCHEMA, VHIS_TABLE)
+    date_cols = get_date_columns(engine, DB_SCHEMA, VHIS_TABLE)
 
     quoted_cols = ", ".join([f'"{c}"' for c in master_cols])
     select_cols = ", ".join([f's."{c}"' for c in master_cols])
-    s_hash = " || '||' || ".join([f"COALESCE(s.\"{c}\"::text, '')" for c in master_cols])
-    h_hash = " || '||' || ".join([f"COALESCE(h.\"{c}\"::text, '')" for c in master_cols])
+    s_hash = build_hash_expr(master_cols, date_cols, prefix="s.")
+    h_hash = build_hash_expr(master_cols, date_cols, prefix="h.")
+    hash_expr = build_hash_expr(master_cols, date_cols)
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql(f"""
+            CREATE INDEX IF NOT EXISTS idx_{VHIS_TABLE}_row_hash
+            ON {DB_SCHEMA}."{VHIS_TABLE}" (md5({hash_expr}));
+        """)
 
     total_new = 0
     chunk_num = 0
