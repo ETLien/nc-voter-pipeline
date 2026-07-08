@@ -14,6 +14,7 @@ import argparse
 import logging
 import os
 import zipfile
+from datetime import datetime
 import pandas as pd
 from sqlalchemy import create_engine
 
@@ -26,7 +27,7 @@ DB_PORT = "5432"
 DB_NAME = "your_database_name"
 DB_SCHEMA = "public"
 
-DB_PATH = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_PATH = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 VREG_TABLE = "nc_vreg_history"
 VHIS_TABLE = "nc_vhis_history"
 VREG_STAGING = "vreg_rebuild_staging"
@@ -64,6 +65,27 @@ def get_table_columns(engine, schema, table):
     with engine.connect() as conn:
         result = conn.exec_driver_sql(f'SELECT * FROM {schema}."{table}" LIMIT 0;')
         return [m[0] for m in result.cursor.description]
+
+
+def get_date_columns(engine, schema, table):
+    with engine.connect() as conn:
+        result = conn.exec_driver_sql(f"""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = '{schema}' AND table_name = '{table}'
+            AND data_type = 'date';
+        """)
+        return {row[0] for row in result}
+
+
+def build_hash_expr(cols, date_cols, prefix=""):
+    parts = []
+    for c in cols:
+        ref = f'{prefix}"{c}"' if prefix else f'"{c}"'
+        if c in date_cols:
+            parts.append(f"COALESCE(({ref} - DATE '0001-01-01')::text, '')")
+        else:
+            parts.append(f"COALESCE({ref}::text, '')")
+    return " || '||' || ".join(parts)
 
 
 def get_archived_zips(archive_dir, stem):
@@ -116,6 +138,9 @@ def drop_indexes(engine, table):
 
 def recreate_indexes(engine):
     log.info("Recreating indexes...")
+    vhis_cols = get_table_columns(engine, DB_SCHEMA, VHIS_TABLE)
+    vhis_date_cols = get_date_columns(engine, DB_SCHEMA, VHIS_TABLE)
+    vhis_hash_expr = build_hash_expr(vhis_cols, vhis_date_cols)
     with engine.begin() as conn:
         conn.exec_driver_sql(f"""
             CREATE INDEX IF NOT EXISTS idx_{VREG_TABLE}_ncid_date
@@ -124,6 +149,10 @@ def recreate_indexes(engine):
         conn.exec_driver_sql(f"""
             CREATE INDEX IF NOT EXISTS idx_{VHIS_TABLE}_ncid_election
             ON {DB_SCHEMA}."{VHIS_TABLE}" (ncid, election_lbl);
+        """)
+        conn.exec_driver_sql(f"""
+            CREATE INDEX IF NOT EXISTS idx_{VHIS_TABLE}_row_hash
+            ON {DB_SCHEMA}."{VHIS_TABLE}" (md5({vhis_hash_expr}));
         """)
     log.info("Indexes recreated.")
 
@@ -170,7 +199,9 @@ def rebuild_registration(engine):
             encoding=FILE_ENCODING, chunksize=CHUNK_SIZE
         ):
             chunk = normalize_whitespace(chunk)
-            chunk["data_date"] = date_str
+            chunk["data_date"] = datetime.strptime(date_str, "%Y%m%d").date()
+            for col in ("birth_year", "age_at_year_end"):
+                chunk[col] = pd.to_numeric(chunk[col].replace("", None), errors="coerce").astype("Int64")
             for col in master_cols:
                 if col not in chunk.columns:
                     chunk[col] = None
