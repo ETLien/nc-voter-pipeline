@@ -294,7 +294,9 @@ def process_registration_file(file_path, date_str):
         encoding=FILE_ENCODING, chunksize=CHUNK_SIZE
     ):
         chunk = normalize_whitespace(chunk)
-        chunk["data_date"] = date_str
+        chunk["data_date"] = datetime.strptime(date_str, "%Y%m%d").date()
+        for col in ("birth_year", "age_at_year_end"):
+            chunk[col] = pd.to_numeric(chunk[col].replace("", None), errors="coerce").astype("Int64")
         for col in master_cols:
             if col not in chunk.columns:
                 chunk[col] = None
